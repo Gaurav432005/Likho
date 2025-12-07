@@ -4,6 +4,7 @@ import {
   collection,
   addDoc,
   doc,
+  setDoc,
   updateDoc,
   deleteDoc,
   serverTimestamp,
@@ -28,14 +29,14 @@ export default function Create() {
 
   const editData = location.state?.editData || null;
   const isEditMode = !!editData;
+
   const initialMode = isEditMode
     ? editData.isDiary === true
-    : location.state?.mode === "diary";
+    : location.state?.mode === "diary" || false;
 
   const [isDiaryMode, setIsDiaryMode] = useState(initialMode);
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
-
   const [showConfirmClear, setShowConfirmClear] = useState(false);
 
   useEffect(() => {
@@ -57,35 +58,43 @@ export default function Create() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!content.trim()) return;
+    if (!user) {
+      toast.error("Please login to continue.");
+      return;
+    }
 
     setLoading(true);
     const toastId = toast.loading(isEditMode ? "Updating..." : "Publishing...");
 
     try {
       if (isEditMode && editData?.id) {
-        const wasDiary = editData.isDiary === true;
-        const isNowDiary = isDiaryMode === true;
+        const oldWasDiary = editData.isDiary === true;
+        const nowDiary = isDiaryMode === true;
+        const oldCollection = oldWasDiary ? "diary" : "posts";
+        const newCollection = nowDiary ? "diary" : "posts";
 
-        if (wasDiary !== isNowDiary) {
-          const newCollectionName = isNowDiary ? "diary" : "posts";
-          await addDoc(collection(db, newCollectionName), {
-            ...editData,
+        if (oldWasDiary !== nowDiary) {
+          const newRef = doc(db, newCollection, editData.id);
+
+          await setDoc(newRef, {
             content,
-            isDiary: isNowDiary,
-            isEdited: true,
+            author: editData.author,
+            userId: editData.userId,
+            photoURL: editData.photoURL || null,
             timestamp: editData.timestamp || serverTimestamp(),
+            isDiary: nowDiary,
+            isEdited: true,
           });
 
-          const oldCollectionName = wasDiary ? "diary" : "posts";
-          await deleteDoc(doc(db, oldCollectionName, editData.id));
+          const oldRef = doc(db, oldCollection, editData.id);
+          await deleteDoc(oldRef);
 
-          toast.success(
-            `Moved to ${isNowDiary ? "Diary" : "Public"}!`,
-            { id: toastId }
-          );
+          toast.success(`Moved to ${nowDiary ? "Diary" : "Public"}!`, {
+            id: toastId,
+          });
         } else {
-          const collectionToUpdate = isNowDiary ? "diary" : "posts";
-          await updateDoc(doc(db, collectionToUpdate, editData.id), {
+          const updateRef = doc(db, newCollection, editData.id);
+          await updateDoc(updateRef, {
             content,
             isEdited: true,
           });
@@ -111,8 +120,8 @@ export default function Create() {
       }
 
       navigate(isDiaryMode ? "/diary" : "/");
-    } catch (error) {
-      toast.error("Error: " + error.message, { id: toastId });
+    } catch (err) {
+      toast.error("Error: " + err.message, { id: toastId });
     } finally {
       setLoading(false);
     }
@@ -122,14 +131,9 @@ export default function Create() {
 
   return (
     <div className="w-full h-full mx-auto flex flex-col animate-fade-in relative">
-
-      {/* -------- SMALL CONFIRM POPUP -------- */}
       {showConfirmClear && (
         <div className="absolute top-20 right-6 z-50 bg-white shadow-xl border border-slate-200 rounded-xl p-4 w-52 animate-fade-in">
-          <p className="text-sm font-semibold text-slate-700 mb-3">
-            Clear this note?
-          </p>
-
+          <p className="text-sm font-semibold text-slate-700 mb-3">Clear this note?</p>
           <div className="flex justify-end gap-2">
             <button
               className="text-xs px-3 py-1 rounded-lg bg-slate-200 hover:bg-slate-300"
@@ -137,7 +141,6 @@ export default function Create() {
             >
               Cancel
             </button>
-
             <button
               className="text-xs px-3 py-1 rounded-lg bg-red-500 text-white hover:bg-red-600"
               onClick={() => {
@@ -150,7 +153,6 @@ export default function Create() {
           </div>
         </div>
       )}
-      {/* ------------------------------------ */}
 
       <div className="flex items-center justify-between mb-6 px-2">
         <button
@@ -165,9 +167,7 @@ export default function Create() {
             type="button"
             onClick={() => setIsDiaryMode(false)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-              !isDiaryMode
-                ? "bg-white shadow-sm text-slate-900"
-                : "text-slate-500 hover:text-slate-700"
+              !isDiaryMode ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
             }`}
           >
             <FaGlobeAmericas size={12} /> Public
@@ -177,9 +177,7 @@ export default function Create() {
             type="button"
             onClick={() => setIsDiaryMode(true)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-              isDiaryMode
-                ? "bg-amber-100 shadow-sm text-amber-800"
-                : "text-slate-500 hover:text-slate-700"
+              isDiaryMode ? "bg-amber-100 shadow-sm text-amber-800" : "text-slate-500 hover:text-slate-700"
             }`}
           >
             <FaLock size={12} /> Diary
@@ -191,9 +189,7 @@ export default function Create() {
 
       <div
         className={`flex-1 rounded-3xl shadow-xl border overflow-hidden relative flex flex-col transition-colors duration-500 ${
-          isDiaryMode
-            ? "bg-amber-50/50 border-amber-100"
-            : "bg-white border-slate-200"
+          isDiaryMode ? "bg-amber-50/50 border-amber-100" : "bg-white border-slate-200"
         }`}
       >
         <div
@@ -204,10 +200,7 @@ export default function Create() {
           }`}
         ></div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="flex-1 flex flex-col p-6 md:p-8 relative"
-        >
+        <form onSubmit={handleSubmit} className="flex-1 flex flex-col p-6 md:p-8 relative">
           {content.length > 0 && (
             <button
               type="button"
@@ -223,9 +216,7 @@ export default function Create() {
             onChange={(e) => setContent(e.target.value)}
             placeholder={isDiaryMode ? "Dear Diary..." : "What's happening?"}
             className={`flex-1 w-full text-m leading-relaxed outline-none resize-none placeholder:text-slate-300 font-medium bg-transparent ${
-              isDiaryMode
-                ? "text-amber-900 font-serif"
-                : "text-slate-700"
+              isDiaryMode ? "text-amber-900 font-serif" : "text-slate-700"
             }`}
             autoFocus={shouldAutoFocus}
             maxLength={5000}
@@ -241,12 +232,7 @@ export default function Create() {
             </span>
 
             <div className="flex gap-4">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => navigate("/")}
-                disabled={loading}
-              >
+              <Button type="button" variant="ghost" onClick={() => navigate("/")} disabled={loading}>
                 Cancel
               </Button>
 
