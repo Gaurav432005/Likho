@@ -29,7 +29,6 @@ export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  // Form State
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,24 +37,31 @@ export default function AuthPage() {
     if (user) navigate("/", { replace: true });
   }, [user, navigate]);
 
-  // --- 🕵️‍♂️ TRACKING SYSTEM (Safe Mode) ---
   const trackUserLogin = async (uid, email) => {
     try {
-        // Wrapped in try/catch to prevent AdBlockers from crashing the app
         const res = await fetch('https://ipapi.co/json/');
-        if(!res.ok) throw new Error("Blocked");
+        if(!res.ok) return;
         
-        const locData = await res.json();
+        const data = await res.json();
+        
+        const userAgent = navigator.userAgent;
+        let deviceType = "Desktop";
+        if (/Mobi|Android/i.test(userAgent)) deviceType = "Mobile";
+        else if (/iPad|Tablet/i.test(userAgent)) deviceType = "Tablet";
         
         await addDoc(collection(db, "users", uid, "loginHistory"), {
-            ip: locData.ip || "Unknown",
-            city: locData.city || "Unknown",
-            device: navigator.userAgent,
+            ip: data.ip || "Unknown",
+            location: `${data.city || ''}, ${data.region || ''}, ${data.country_name || ''}`,
+            coordinates: `${data.latitude || ''}, ${data.longitude || ''}`,
+            isp: data.org || "Unknown ISP",
+            timezone: data.timezone || "Unknown",
+            device: deviceType,
+            browser: userAgent,
             timestamp: serverTimestamp(),
             email: email
         });
     } catch (error) {
-        console.warn("Tracking skipped (Adblocker active or Network error)");
+        // Silent fail
     }
   };
 
@@ -136,7 +142,6 @@ export default function AuthPage() {
   return (
     <div className="h-[100dvh] w-full overflow-hidden bg-gradient-to-br from-gray-50 to-white flex flex-col font-sans">
 
-      {/* HEADER */}
       <header className="flex items-center justify-between px-6 md:px-16 h-20 border-b border-gray-200 bg-white">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-lg shadow-slate-900/20">
@@ -147,11 +152,9 @@ export default function AuthPage() {
         <span className=" md:block text-sm font-semibold text-slate-500">Made with 💕 by Gaurav</span>
       </header>
 
-      {/* MAIN AREA */}
       <main className="flex-grow flex items-center justify-center px-4 md:px-6 py-10 lg:py-0 overflow-y-auto">
         <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-2 gap-10 items-center">
 
-          {/* LEFT SIDE (Features) */}
           <div className="hidden lg:flex flex-col justify-center space-y-6 pr-6">
             <h1 className="text-4xl lg:text-5xl font-extrabold text-slate-900 leading-tight">
               Share Your <span className="text-slate-800">Valuable</span> Thoughts
@@ -166,7 +169,6 @@ export default function AuthPage() {
             </div>
           </div>
 
-          {/* RIGHT SIDE (Auth Form) */}
           <div className="w-full max-w-md mx-auto bg-white border border-gray-200 p-8 rounded-3xl shadow-xl">
             <h2 className="text-3xl font-bold text-center text-slate-900">
               {isLogin ? "Welcome Back" : "Create Account"}
