@@ -29,23 +29,20 @@ export default function App() {
   return (
     <AuthProvider>
       <NotificationProvider>
-  
-      <Toaster
-  position="top-center"
-  toastOptions={{
-    duration: 3000,
-    style: {
-      background: "#000",
-      color: "#fff",
-      borderRadius: "12px",
-      border: "1px solid #333",
-      padding: "12px 16px",
-    },
-  }}
-  containerStyle={{
-    top: 16,
-  }}
-/>
+        <Toaster
+            position="top-center"
+            toastOptions={{
+            duration: 3000,
+            style: {
+                background: "#000",
+                color: "#fff",
+                borderRadius: "12px",
+                border: "1px solid #333",
+                padding: "12px 16px",
+            },
+            }}
+            containerStyle={{ top: 16 }}
+        />
 
         <Routes>
             <Route path="/auth" element={<AuthPage />} />
@@ -57,7 +54,6 @@ export default function App() {
                 <Route path="view/:collectionName/:id" element={<ViewPost />} />
                 <Route path="chat" element={<ChatList />} />
                 <Route path="chat/:chatId" element={<ChatWindow />} />
-                {/* Fixed Profile Route */}
                 <Route path="profile/:userId" element={<Profile />} />
             </Route>
 

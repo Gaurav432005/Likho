@@ -72,8 +72,8 @@ export const Sidebar = ({ isOpen, onClose }) => {
           })}
         </nav>
 
-        <div className="p-6 border-t border-slate-100">
-            <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 flex items-center justify-between group hover:border-slate-300 transition-colors cursor-pointer">
+        <div className="p-3 h-20 border-t border-slate-100 flex justify-center items-center">
+            <div className="bg-slate-50 p-2 w-full h-full rounded-2xl border border-slate-200 flex items-center justify-between group hover:border-slate-300 transition-colors cursor-pointer">
                 <Link to={`/profile/${user?.uid}`} onClick={onClose} className="flex items-center gap-3 overflow-hidden flex-1">
                     <Avatar src={user?.photoURL} name={user?.displayName} size="sm" />
                     <div className="truncate">
