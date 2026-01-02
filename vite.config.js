@@ -9,17 +9,6 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      
-   
-      devOptions: {
-        suppressWarnings: true,
-        enabled: true,
-        type: 'module',
-      },
-
-      workbox: {
-        navigateFallbackDeny: [/^\/registerSW\.js$/],
-      },
 
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
