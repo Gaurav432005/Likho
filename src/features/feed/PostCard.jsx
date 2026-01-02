@@ -146,15 +146,6 @@ export const PostCard = ({ note, isDiary, onDelete }) => {
            </p>
         </div>
 
-        {/* Likes Footer (Only for Posts) */}
-        {!isDiary && (
-            <div className="flex items-center gap-4 pt-2 border-t border-slate-50/50">
-                 <button onClick={toggleLike} className={cn("flex items-center gap-1.5 text-xs font-bold transition-colors", isLiked ? "text-red-500" : "text-slate-400 hover:text-slate-600")}>
-                    {isLiked ? <FaHeart/> : <FaRegHeart/>} 
-                    {likesCount}
-                 </button>
-            </div>
-        )}
       </motion.div>
 
       <Modal 
