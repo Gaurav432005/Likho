@@ -25,3 +25,8 @@ build/
 # Firebase specific
 .firebase/
 firebase-debug.log
+
+# PWA / Service Worker generated files
+dev-dist/
+workbox-*.js
+sw.js
