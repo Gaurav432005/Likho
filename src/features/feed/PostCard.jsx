@@ -3,23 +3,22 @@ import { useAuth } from "../../context/AuthContext";
 import { db } from "../../lib/firebase";
 import { doc, updateDoc, arrayUnion, arrayRemove, deleteDoc } from "firebase/firestore";
 import { motion, AnimatePresence } from "framer-motion";
-import { FaHeart, FaRegHeart, FaRegComment, FaEllipsisH, FaTrash, FaLock, FaEdit } from "react-icons/fa";
+import { FaHeart, FaRegHeart, FaEllipsisH, FaTrash, FaLock, FaEdit } from "react-icons/fa";
 import { toast } from "react-hot-toast";
 import { useNavigate } from "react-router-dom";
 import { Avatar } from "../../components/ui/Avatar";
 import { cn } from "../../utils/cn";
-import { Modal } from "../../components/ui/Modal"; // 1. Import Modal
+import { Modal } from "../../components/ui/Modal";
 
-export const PostCard = ({ note, isDiary }) => {
+export const PostCard = ({ note, isDiary, onDelete }) => {
   const { user } = useAuth();
   const navigate = useNavigate();
   
   const [isLiked, setIsLiked] = useState(note.likes?.includes(user?.uid));
   const [likesCount, setLikesCount] = useState(note.likes?.length || 0);
   const [showMenu, setShowMenu] = useState(false);
-  
-  // 2. New State for Delete Modal
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleted, setIsDeleted] = useState(false); // Local delete state
 
   const handleProfile = (e) => {
     e.stopPropagation();
@@ -35,6 +34,7 @@ export const PostCard = ({ note, isDiary }) => {
     if (isDiary) return; 
     if (!user) return toast.error("Login to like!");
 
+    // Optimistic Update
     const newIsLiked = !isLiked;
     setIsLiked(newIsLiked);
     setLikesCount(prev => newIsLiked ? prev + 1 : prev - 1);
@@ -44,26 +44,35 @@ export const PostCard = ({ note, isDiary }) => {
       if (newIsLiked) await updateDoc(postRef, { likes: arrayUnion(user.uid) });
       else await updateDoc(postRef, { likes: arrayRemove(user.uid) });
     } catch (error) {
+      // Revert if failed
       setIsLiked(!newIsLiked);
       setLikesCount(prev => !newIsLiked ? prev + 1 : prev - 1);
     }
   };
 
-  // 3. Trigger Modal instead of window.confirm
   const handleDeleteClick = (e) => {
     e.stopPropagation();
-    setShowMenu(false); // Menu band karo
-    setShowDeleteModal(true); // Modal kholo
+    setShowMenu(false);
+    setShowDeleteModal(true);
   };
 
-  // 4. Actual Delete Function (Called from Modal)
   const confirmDelete = async () => {
+    // 1. If Parent provided delete logic, use it (Fastest)
+    if (onDelete) {
+        onDelete(); 
+        setShowDeleteModal(false);
+        return;
+    }
+
+    // 2. Fallback: Self-delete logic (e.g. Profile Page)
     try {
         await deleteDoc(doc(db, isDiary ? "diary" : "posts", note.id));
         toast.success("Deleted successfully");
-        setShowDeleteModal(false);
+        setIsDeleted(true); // Hide card visually
     } catch(err) { 
         toast.error("Error deleting"); 
+    } finally {
+        setShowDeleteModal(false);
     }
   };
 
@@ -71,6 +80,8 @@ export const PostCard = ({ note, isDiary }) => {
       e.stopPropagation();
       navigate('/create', { state: { editData: note, isDiary } });
   };
+
+  if (isDeleted) return null; // Component unmounts effectively
 
   return (
     <>
@@ -96,16 +107,15 @@ export const PostCard = ({ note, isDiary }) => {
               )}
               
               <div className="flex flex-col">
-                 <span onClick={handleProfile} className={cn("font-bold text-sm leading-tight", isDiary ? "text-amber-900" : "text-slate-900 cursor-pointer hover:underline")}>
-                   {isDiary ? "Dear Diary" : note.author}
-                 </span>
-                 <span className="text-[10px] text-slate-400 uppercase font-semibold mt-0.5">
-                   {note.timestamp?.seconds ? new Date(note.timestamp.seconds * 1000).toLocaleDateString() : 'Just now'}
-                 </span>
+                  <span onClick={handleProfile} className={cn("font-bold text-sm leading-tight", isDiary ? "text-amber-900" : "text-slate-900 cursor-pointer hover:underline")}>
+                    {isDiary ? "Dear Diary" : note.author}
+                  </span>
+                  <span className="text-[10px] text-slate-400 uppercase font-semibold mt-0.5">
+                    {note.timestamp?.seconds ? new Date(note.timestamp.seconds * 1000).toLocaleDateString() : 'Just now'}
+                  </span>
               </div>
            </div>
            
-           {/* Three Dots Menu */}
            {user?.uid === note.userId && (
                <div className="relative">
                    <button 
@@ -122,8 +132,6 @@ export const PostCard = ({ note, isDiary }) => {
                               onClick={(e) => e.stopPropagation()}
                           >
                               <button onClick={handleEdit} className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-50 w-full text-sm font-bold"><FaEdit size={12}/> Edit</button>
-                              
-                              {/* Fix: Click triggers handleDeleteClick (Modal) not direct delete */}
                               <button onClick={handleDeleteClick} className="flex items-center gap-2 px-4 py-2 text-red-500 hover:bg-red-50 w-full text-sm font-bold border-t border-slate-50"><FaTrash size={12}/> Delete</button>
                           </motion.div>
                       )}
@@ -138,10 +146,17 @@ export const PostCard = ({ note, isDiary }) => {
            </p>
         </div>
 
-        {/* Note: Likes/Comments footer removed as per your last request for cleaner look */}
+        {/* Likes Footer (Only for Posts) */}
+        {!isDiary && (
+            <div className="flex items-center gap-4 pt-2 border-t border-slate-50/50">
+                 <button onClick={toggleLike} className={cn("flex items-center gap-1.5 text-xs font-bold transition-colors", isLiked ? "text-red-500" : "text-slate-400 hover:text-slate-600")}>
+                    {isLiked ? <FaHeart/> : <FaRegHeart/>} 
+                    {likesCount}
+                 </button>
+            </div>
+        )}
       </motion.div>
 
-      {/* 5. Confirmation Modal */}
       <Modal 
         isOpen={showDeleteModal} 
         onClose={() => setShowDeleteModal(false)} 

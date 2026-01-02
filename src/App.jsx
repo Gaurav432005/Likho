@@ -4,6 +4,8 @@ import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { NotificationProvider } from "./context/NotificationContext";
 import { Layout } from "./components/layout/Layout";
+import DomainChangeBanner from "./DomainChangeBanner";
+import InstallPrompt from "./components/ui/InstallPrompt";
 
 // Features
 import AuthPage from "./features/auth/AuthPage";
@@ -27,8 +29,12 @@ export default function App() {
   useEffect(() => window.scrollTo(0, 0), [pathname]);
 
   return (
+   
     <AuthProvider>
       <NotificationProvider>
+       
+      <DomainChangeBanner />
+         <InstallPrompt />
         <Toaster
             position="top-center"
             toastOptions={{
