@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { FaExclamationTriangle, FaArrowRight } from "react-icons/fa";
 
 const OLD_DOMAIN = "likho-sooty.vercel.app";
-const NEW_DOMAIN = "likho.co.in";
+const NEW_DOMAIN = "www.likho.co.in";
 
 export default function DomainChangeBanner() {
   const [show, setShow] = useState(false);
