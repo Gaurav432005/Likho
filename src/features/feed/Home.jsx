@@ -5,86 +5,195 @@ import Masonry from "react-masonry-css";
 import { PostCard } from "./PostCard";
 import { Button } from "../../components/ui/Button";
 import { Loading } from "../../components/ui/Loading";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { ErrorState } from "../../components/ui/ErrorState";
 import { useNavigate } from "react-router-dom";
-import { FaPenFancy, FaArrowDown } from "react-icons/fa";
+import { FaPenFancy, FaArrowDown, FaFire } from "react-icons/fa";
 import { toast } from "react-hot-toast";
 
 export default function Home() {
   const [posts, setPosts] = useState([]);
+  const [trendingPosts, setTrendingPosts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [lastDoc, setLastDoc] = useState(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showTrending, setShowTrending] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => { fetchPosts(); }, []);
+  useEffect(() => { 
+    fetchPosts(); 
+    fetchTrendingPosts();
+  }, []);
 
   const fetchPosts = async () => {
-    setLoading(true);
     try {
-        const q = query(collection(db, "posts"), orderBy("timestamp", "desc"), limit(20));
-        const snapshot = await getDocs(q);
-        const newPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setPosts(newPosts);
+      setLoading(true);
+      setError(null);
+      const q = query(collection(db, "posts"), orderBy("timestamp", "desc"), limit(20));
+      const snapshot = await getDocs(q);
+      
+      const newPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setPosts(newPosts);
+      
+      if (snapshot.docs.length > 0) {
         setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
-        setHasMore(snapshot.docs.length === 20);
-    } catch (error) { console.error(error); } 
-    finally { setLoading(false); }
+      }
+      setHasMore(snapshot.docs.length === 20);
+    } catch (error) { 
+      console.error("Fetch posts error:", error);
+      setError("Failed to load posts");
+      toast.error("Failed to load posts");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTrendingPosts = async () => {
+    try {
+      const q = query(
+        collection(db, "posts"),
+        orderBy("timestamp", "desc"),
+        limit(100)
+      );
+      const snapshot = await getDocs(q);
+      const allPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const trending = allPosts
+        .sort((a, b) => (b.likes?.length || 0) - (a.likes?.length || 0))
+        .slice(0, 12);
+      setTrendingPosts(trending);
+    } catch (error) {
+      console.error("Fetch trending error:", error);
+    }
   };
 
   const fetchMorePosts = async () => {
-      if (!lastDoc) return;
+    if (!lastDoc || !hasMore || loadingMore) return;
+    try {
       setLoadingMore(true);
-      try {
-          const q = query(collection(db, "posts"), orderBy("timestamp", "desc"), startAfter(lastDoc), limit(20));
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-              const newPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-              setPosts(prev => [...prev, ...newPosts]);
-              setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
-          } else { setHasMore(false); }
-      } catch (error) { console.error(error); } 
-      finally { setLoadingMore(false); }
+      const q = query(collection(db, "posts"), orderBy("timestamp", "desc"), startAfter(lastDoc), limit(20));
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        const newPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setPosts(prev => [...prev, ...newPosts]);
+        setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
+        setHasMore(snapshot.docs.length === 20);
+      } else { 
+        setHasMore(false); 
+      }
+    } catch (error) { 
+      console.error("Fetch more posts error:", error);
+      toast.error("Failed to load more posts");
+    } finally {
+      setLoadingMore(false); 
+    }
   };
 
-  // Optimistic Delete Handler
   const handlePostDelete = async (postId) => {
-      // 1. Instantly remove from UI
-      setPosts(prev => prev.filter(p => p.id !== postId));
-      
-      try {
-         // 2. Delete from DB
-         await deleteDoc(doc(db, "posts", postId));
-         toast.success("Deleted");
-      } catch (error) {
-         toast.error("Failed to delete");
-         // Optional: Re-fetch or add back if failed, but for MVP keep it simple
+    const deletedPost = posts.find(p => p.id === postId);
+    setPosts(prev => prev.filter(p => p.id !== postId));
+    
+    try {
+      await deleteDoc(doc(db, "posts", postId));
+      setTrendingPosts(prev => prev.filter(p => p.id !== postId));
+      toast.success("Post deleted");
+    } catch (error) {
+      console.error("Delete error:", error);
+      toast.error("Failed to delete");
+      if (deletedPost) {
+        setPosts(prev => [...prev, deletedPost]);
       }
+    }
   };
+
+  if (loading) return <Loading message="Loading feed..." />;
 
   return (
-    <div className="min-h-full pb-24">
-       {loading ? <Loading message="Loading Feed..." /> : posts.length === 0 ? (
-         <div className="text-center py-24 bg-white mx-2 rounded-3xl border border-dashed border-slate-200">
-            <h3 className="font-bold text-lg mb-2 text-slate-800">It's quiet here</h3>
-            <Button onClick={() => navigate('/create')} className="gap-2"><FaPenFancy /> Create Post</Button>
-         </div>
-       ) : (
-         <>
-             <Masonry breakpointCols={{ default: 3, 1100: 2, 700: 1 }} className="flex w-auto -ml-4" columnClassName="pl-4 bg-clip-padding">
-               {/* Pass handleDelete to allow optimistic update from Child */}
-               {posts.map(post => <PostCard key={post.id} note={post} onDelete={() => handlePostDelete(post.id)} />)}
-             </Masonry>
-             
-             {hasMore && (
-                 <div className="flex justify-center mt-8">
-                     <Button onClick={fetchMorePosts} disabled={loadingMore} variant="secondary">
-                        {loadingMore ? "Loading..." : <><FaArrowDown className="mr-2"/> Load More</>}
-                     </Button>
-                 </div>
-             )}
-         </>
-       )}
+    <div className="w-full max-w-6xl mx-auto">
+      {error && (
+        <ErrorState title="Feed Error" message={error} onRetry={fetchPosts} />
+      )}
+
+      {/* Trending Toggle */}
+      {trendingPosts.length > 0 && (
+        <div className="flex gap-3 mb-8 sticky top-0  z-20 bg-white/95 backdrop-blur py-4 md:-mx-10 -mx-4 -my-6 px-4 border-b border-slate-200">
+          <button
+            onClick={() => setShowTrending(false)}
+            className={`px-5 py-2.5 rounded-lg font-semibold transition-all duration-200 ${
+              !showTrending
+                ? "bg-slate-900 text-white shadow-lg"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
+          >
+            Recent
+          </button>
+          <button
+            onClick={() => setShowTrending(true)}
+            className={`px-5 py-2.5 rounded-lg font-semibold transition-all duration-200 flex items-center gap-2 ${
+              showTrending
+                ? "bg-primary-600 text-white shadow-lg"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
+          >
+            <FaFire /> Trending
+          </button>
+        </div>
+      )}
+
+      {/* Posts Grid */}
+      {showTrending && trendingPosts.length > 0 ? (
+        <>
+          <Masonry breakpointCols={{ default: 3, 1100: 2, 700: 1 }} className="flex w-auto -ml-4" columnClassName="pl-4">
+            {trendingPosts.map(post => (
+              post.id && (
+                <PostCard 
+                  key={post.id} 
+                  note={post} 
+                  onDelete={() => handlePostDelete(post.id)} 
+                />
+              )
+            ))}
+          </Masonry>
+        </>
+      ) : showTrending ? (
+        <EmptyState 
+          icon={FaFire}
+          title="No trending posts"
+          description="Check back later for popular content!"
+        />
+      ) : posts.length === 0 ? (
+        <EmptyState 
+          icon={FaPenFancy}
+          title="Your feed is empty"
+          description="Be the first to share your thoughts!"
+          actionLabel="Create Post"
+          onAction={() => navigate('/create')}
+        />
+      ) : (
+        <>
+          <Masonry breakpointCols={{ default: 3, 1100: 2, 700: 1 }} className="flex w-auto -ml-4" columnClassName="pl-4">
+            {posts.map(post => (
+              post.id && (
+                <PostCard 
+                  key={post.id} 
+                  note={post} 
+                  onDelete={() => handlePostDelete(post.id)} 
+                />
+              )
+            ))}
+          </Masonry>
+          
+          {hasMore && (
+            <div className="flex justify-center mt-8 pb-8">
+              <Button onClick={fetchMorePosts} disabled={loadingMore} variant="secondary">
+                {loadingMore ? "Loading..." : <><FaArrowDown className="mr-2"/> Load More</>}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -6,108 +6,149 @@ import Masonry from "react-masonry-css";
 import { PostCard } from "./PostCard";
 import { Button } from "../../components/ui/Button";
 import { Loading } from "../../components/ui/Loading";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { ErrorState } from "../../components/ui/ErrorState";
 import { useNavigate } from "react-router-dom";
-import { FaArrowDown, FaLock } from "react-icons/fa"; // Icon added
+import { FaArrowDown, FaLock, FaPenNib } from "react-icons/fa";
 import { toast } from "react-hot-toast";
 
 export default function Diary() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [lastDoc, setLastDoc] = useState(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
-    // FIX: Check user?.uid instead of full user object
-    if(user?.uid) fetchEntries();
+    if (user?.uid) fetchEntries();
   }, [user?.uid]); 
 
   const fetchEntries = async () => {
-    setLoading(true);
+    if (!user?.uid) return;
     try {
-        const q = query(
-            collection(db, "diary"), 
-            where("userId", "==", user.uid), 
-            orderBy("timestamp", "desc"), 
-            limit(20)
-        );
-        const snapshot = await getDocs(q);
-        setEntries(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      setLoading(true);
+      setError(null);
+      const q = query(
+        collection(db, "diary"), 
+        where("userId", "==", user.uid), 
+        orderBy("timestamp", "desc"), 
+        limit(20)
+      );
+      const snapshot = await getDocs(q);
+      
+      setEntries(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      
+      if (snapshot.docs.length > 0) {
         setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
-        setHasMore(snapshot.docs.length === 20);
-    } catch (e) { console.error(e); } 
-    finally { setLoading(false); }
+      }
+      setHasMore(snapshot.docs.length === 20);
+    } catch (e) { 
+      console.error("Fetch diary error:", e);
+      setError("Failed to load diary entries");
+      toast.error("Failed to load diary");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchMoreEntries = async () => {
-      if (!lastDoc) return;
+    if (!lastDoc || !hasMore || loadingMore || !user?.uid) return;
+    try {
       setLoadingMore(true);
-      try {
-          const q = query(
-              collection(db, "diary"), 
-              where("userId", "==", user.uid), 
-              orderBy("timestamp", "desc"), 
-              startAfter(lastDoc), 
-              limit(20)
-          );
-          const snapshot = await getDocs(q);
-          if (!snapshot.empty) {
-              setEntries(prev => [...prev, ...snapshot.docs.map(d => ({ id: d.id, ...d.data() }))]);
-              setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
-          } else { setHasMore(false); }
-      } catch (e) { console.error(e); } 
-      finally { setLoadingMore(false); }
-  };
+      const q = query(
+        collection(db, "diary"),
+        where("userId", "==", user.uid),
+        orderBy("timestamp", "desc"),
+        startAfter(lastDoc),
+        limit(20)
+      );
+      const snapshot = await getDocs(q);
 
-  const handleDiaryDelete = async (id) => {
-      // Optimistic UI Update
-      setEntries(prev => prev.filter(e => e.id !== id));
-      try { 
-          await deleteDoc(doc(db, "diary", id)); 
-          toast.success("Entry deleted"); 
-      } catch(e) { 
-          toast.error("Could not delete");
-          // Optional: Re-fetch entries if fail
+      if (!snapshot.empty) {
+        const newEntries = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        setEntries(prev => [...prev, ...newEntries]);
+        setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
+        setHasMore(snapshot.docs.length === 20);
+      } else {
+        setHasMore(false);
       }
+    } catch (e) {
+      console.error("Fetch more diary error:", e);
+      toast.error("Failed to load more");
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
-  if (loading) return <Loading message="Opening Diary..." />;
+  const handleEntryDelete = async (entryId) => {
+    const deleted = entries.find(e => e.id === entryId);
+    setEntries(prev => prev.filter(e => e.id !== entryId));
+
+    try {
+      await deleteDoc(doc(db, "diary", entryId));
+      toast.success("Entry deleted");
+    } catch (e) {
+      console.error("Delete error:", e);
+      toast.error("Failed to delete");
+      if (deleted) {
+        setEntries(prev => [...prev, deleted]);
+      }
+    }
+  };
+
+  if (loading) return <Loading message="Loading diary..." />;
 
   return (
-    <div className="pb-20 min-h-full">
-       {entries.length === 0 ? (
-         <div className="text-center flex flex-col justify-center items-center py-24 bg-amber-50/50 rounded-3xl border border-dashed border-amber-200 mx-2 mt-4">
-            <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center text-amber-600 mb-4">
-                <FaLock size={24} />
+    <div className="w-full max-w-6xl mx-auto">
+      <div className="flex items-center gap-3 mb-8">
+        <div className="bg-primary-100 p-3 rounded-lg">
+          <FaLock className="text-primary-600 text-xl" />
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900">My Diary</h2>
+          <p className="text-slate-500 text-sm">Only you can see these entries</p>
+        </div>
+      </div>
+
+      {error && (
+        <ErrorState title="Diary Error" message={error} onRetry={fetchEntries} />
+      )}
+
+      {entries.length === 0 ? (
+        <EmptyState 
+          icon={FaPenNib}
+          title="Your diary is empty"
+          description="Start writing your private thoughts..."
+          actionLabel="Write Entry"
+          onAction={() => navigate('/create', { state: { mode: 'diary' } })}
+        />
+      ) : (
+        <>
+          <Masonry breakpointCols={{ default: 3, 1100: 2, 700: 1 }} className="flex w-auto -ml-4" columnClassName="pl-4">
+            {entries.map(entry => (
+              entry.id && (
+                <PostCard 
+                  key={entry.id} 
+                  note={entry} 
+                  onDelete={() => handleEntryDelete(entry.id)} 
+                />
+              )
+            ))}
+          </Masonry>
+          
+          {hasMore && (
+            <div className="flex justify-center mt-8 pb-8">
+              <Button onClick={fetchMoreEntries} disabled={loadingMore} variant="secondary">
+                {loadingMore ? "Loading..." : <><FaArrowDown className="mr-2"/> Load More</>}
+              </Button>
             </div>
-            <h3 className="font-bold text-amber-900 mb-2 text-lg">Your Secret Diary</h3>
-            <p className="text-amber-700/60 text-sm mb-6 max-w-xs">Write your personal thoughts here. Only you can see them.</p>
-            <Button variant="secondary" onClick={() => navigate('/create', { state: { mode: 'diary' } })}>Write First Entry</Button>
-         </div>
-       ) : (
-         <>
-            <Masonry breakpointCols={{ default: 3, 1100: 2, 700: 1 }} className="flex w-auto -ml-4" columnClassName="pl-4 bg-clip-padding">
-                {entries.map(entry => (
-                    <PostCard 
-                        key={entry.id} 
-                        note={entry} 
-                        isDiary={true} 
-                        onDelete={() => handleDiaryDelete(entry.id)} 
-                    />
-                ))}
-            </Masonry>
-            
-            {hasMore && (
-                 <div className="flex justify-center mt-8">
-                     <Button onClick={fetchMoreEntries} disabled={loadingMore} variant="secondary">
-                        {loadingMore ? "Loading..." : <><FaArrowDown className="mr-2"/> Load More</>}
-                     </Button>
-                 </div>
-             )}
-         </>
-       )}
+          )}
+        </>
+      )}
     </div>
   );
 }

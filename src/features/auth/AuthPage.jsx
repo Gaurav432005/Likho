@@ -1,242 +1,366 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { auth, db, googleProvider } from "../../lib/firebase";
 import { 
   createUserWithEmailAndPassword, 
   signInWithEmailAndPassword, 
   updateProfile, 
-  signInWithPopup,
+  signInWithPopup, 
   sendEmailVerification,
   sendPasswordResetEmail,
-  signOut
+  signOut,
+  reload
 } from "firebase/auth";
-import { doc, setDoc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { toast } from "react-hot-toast";
 import { useAuth } from "../../context/AuthContext";
 
 import { 
-  FaFeatherAlt, 
-  FaPenFancy, 
-  FaGlobeAmericas, 
-  FaShieldAlt, 
-  FaUser,
-  FaEnvelope,
-  FaLock,
-  FaPaperPlane,
-  FaArrowLeft,
-  FaExclamationTriangle,
-  FaCheck
+  FaFeatherAlt, FaPenFancy, FaGlobeAmericas, FaShieldAlt, 
+  FaUser, FaEnvelope, FaLock, FaPaperPlane, FaArrowLeft, 
+  FaCheck, FaRedo, FaSpinner
 } from "react-icons/fa";
 import { FcGoogle } from "react-icons/fc";
 
 export default function AuthPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const timerRef = useRef(null);
+  const pollRef = useRef(null);
 
-  // "login" | "signup" | "forgot"
-  const [authMode, setAuthMode] = useState("login"); 
+  const [viewState, setViewState] = useState("login"); 
   const [loading, setLoading] = useState(false);
-  const [verificationSent, setVerificationSent] = useState(false);
-
+  
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirmPass, setConfirmPass] = useState(""); 
+  const [confirmPass, setConfirmPass] = useState("");
+  
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [pollAttempts, setPollAttempts] = useState(0);
+  const [validationErrors, setValidationErrors] = useState({});
 
-  // --- FIXED: UseEffect Logic ---
-  // Ye sirf tab chalega jab user pehle se logged in ho (Page Refresh case)
-  // handleAuth wala navigation alag handle hoga taaki clash na ho.
-  useEffect(() => {
-    if (user && !loading) {
-        // Legacy Check duplicate karne ki zarurat nahi, 
-        // agar user context me hai, matlab wo valid hai.
-        // Bas verification status check karlo.
-        if(user.emailVerified) {
-             navigate("/", { replace: true });
-        }
-    }
-  }, [user, navigate, loading]);
+  // Validation helpers
+  const validateEmail = (email) => {
+    const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return regex.test(email);
+  };
 
-  const trackUserLogin = async (uid, email) => {
+  const validatePassword = (password) => {
+    return password.length >= 6;
+  };
+
+  const validateSignup = () => {
+    const errors = {};
+    if (!name.trim()) errors.name = "Name is required";
+    if (!email) errors.email = "Email is required";
+    else if (!validateEmail(email)) errors.email = "Invalid email format";
+    if (!password) errors.password = "Password is required";
+    else if (!validatePassword(password)) errors.password = "Password must be at least 6 characters";
+    if (password !== confirmPass) errors.confirmPass = "Passwords do not match";
+    
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  // Helper to sync user to DB (Only call this AFTER verification)
+  const syncUserToFirestore = async (userAuth, additionalData = {}) => {
+    if (!userAuth) return;
     try {
-        const res = await fetch('https://ipapi.co/json/');
-        // Agar ad-blocker ne roka ya API down hai, to yahi ruk jao
-        if(!res.ok) return; 
-        
-        const data = await res.json();
-        const userAgent = navigator.userAgent;
-        let deviceType = "Desktop";
-        if (/Mobi|Android/i.test(userAgent)) deviceType = "Mobile";
-        else if (/iPad|Tablet/i.test(userAgent)) deviceType = "Tablet";
-        
-        await addDoc(collection(db, "users", uid, "loginHistory"), {
-            ip: data.ip || "Unknown",
-            location: `${data.city || ''}, ${data.region || ''}, ${data.country_name || ''}`,
-            device: deviceType,
-            timestamp: serverTimestamp(),
-            email: email
-        });
-    } catch (error) { 
-        // Silent fail is okay here, UX kharab nahi hona chahiye
-        console.log("Tracking skipped:", error.message); 
+      const userRef = doc(db, "users", userAuth.uid);
+      await setDoc(userRef, {
+        uid: userAuth.uid,
+        email: userAuth.email,
+        displayName: userAuth.displayName || additionalData.displayName || "User",
+        photoURL: userAuth.photoURL || null,
+        lastLoginAt: serverTimestamp(),
+        ...additionalData
+      }, { merge: true });
+    } catch (error) {
+      console.error("Profile sync error", error);
     }
   };
 
-  const handleAuth = async (e) => {
-    e.preventDefault();
-
-    // 1. Forgot Password Flow
-    if (authMode === "forgot") {
-        if (!email) return toast.error("Please enter your email");
-        setLoading(true);
-        try {
-            await sendPasswordResetEmail(auth, email);
-            toast.success("Reset link sent! Check your email.");
-            setAuthMode("login");
-        } catch (err) {
-            toast.error(err.message.replace("Firebase:", "").replace("auth/", ""));
-        } finally {
-            setLoading(false);
-        }
-        return;
+  const clearAllIntervals = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
-
-    // 2. Signup Validations
-    if (authMode === "signup") {
-        if (password.length < 6) return toast.error("Password must be at least 6 characters");
-        if (password !== confirmPass) return toast.error("Passwords do not match!"); 
-        if (name.trim().length === 0) return toast.error("Please enter your name");
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
+  };
 
-    setLoading(true);
+  useEffect(() => {
+    return () => {
+      clearAllIntervals();
+    };
+  }, []);
 
-    try {
-      let userCredential;
-      
-      if (authMode === "login") {
-        // --- LOGIN FLOW ---
-        userCredential = await signInWithEmailAndPassword(auth, email, password);
-        const loggedUser = userCredential.user;
+  // 1. Redirect Logic
+  useEffect(() => {
+    if (!authLoading && user) {
+       const isGoogle = user.providerData.some(p => p.providerId === "google.com");
+       
+       if (user.emailVerified || isGoogle) {
+           navigate("/", { replace: true });
+       } else {
+           setViewState("verify");
+       }
+    }
+  }, [user, authLoading, navigate]);
 
-        // --- FIXED: Legacy & Verification Check ---
-        const LEGACY_CUTOFF_DATE = new Date('2026-01-10'); 
-        const userCreationTime = new Date(loggedUser.metadata.creationTime);
-
-        // Logic: Naya user + Not Verified = BLOCK
-        if (userCreationTime > LEGACY_CUTOFF_DATE && !loggedUser.emailVerified) {
-             // CRITICAL FIX: Logout immediately to close loophole
-             await signOut(auth);
-             
-             toast.error("Email not verified yet!");
-             setVerificationSent(true);
-             setLoading(false);
-             return; // Stop execution here
-        }
-
-        toast.success("Welcome back!");
+  // 2. Auto-Poll for Verification (with timeout and retry limit)
+  useEffect(() => {
+    if (viewState === "verify" && user && !user.emailVerified) {
+        const maxAttempts = 200; // ~10 minutes with 3s interval
+        setPollAttempts(0);
         
-        // FIXED: Await tracking so component doesn't unmount before fetch completes
-        await trackUserLogin(loggedUser.uid, email);
-        
-        // Manual navigation
-        navigate("/", { replace: true });
+        pollRef.current = setInterval(async () => {
+            try {
+                // Use auth.currentUser to get fresh user state
+                const currentUser = auth.currentUser;
+                if (!currentUser) return;
+                
+                await reload(currentUser);
+                
+                if (currentUser.emailVerified) {
+                    await syncUserToFirestore(currentUser); 
+                    toast.success("Account Verified Successfully!");
+                    clearInterval(pollRef.current);
+                    navigate("/", { replace: true });
+                } else {
+                    setPollAttempts(prev => prev + 1);
+                    // Stop polling after max attempts
+                    if (prev + 1 >= maxAttempts) {
+                        clearInterval(pollRef.current);
+                        toast.error("Verification timeout. Please resend the email.");
+                    }
+                }
+            } catch (err) {
+               console.error("Verification poll error:", err);
+            }
+        }, 3000);
+    }
+    return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [viewState, user, navigate]);
 
-      } else {
-        // --- SIGNUP FLOW ---
-        userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        const newUser = userCredential.user;
-        
-        await updateProfile(newUser, { displayName: name });
-        await setDoc(doc(db, "users", newUser.uid), {
-          displayName: name,
-          email,
-          photoURL: null,
-          createdAt: new Date()
-        });
-
-        await sendEmailVerification(newUser);
-        // Important: Signup ke baad bhi logout kar do taaki wo verify kiye bina ghus na paaye
-        await signOut(auth);
-        
-        setVerificationSent(true);
-        toast.success("Account created! Verification email sent.");
-      }
-      
-    } catch (err) {
-      console.error(err);
-      const errMsg = err.message.replace("Firebase:", "").replace("auth/", "").trim();
-      toast.error(errMsg);
-    } finally {
-      // Agar verify screen dikha rahe hain to loading false karo, 
-      // warna navigation hone wala hai to loading true rehne do (flicker avoid karne ke liye)
-      if (verificationSent || authMode === "signup" || authMode === "forgot") {
-          setLoading(false);
-      }
+  const getFriendlyErrorMessage = (errorCode) => {
+    switch (errorCode) {
+      case 'auth/user-not-found': return "No account found with this email.";
+      case 'auth/wrong-password': return "Incorrect password.";
+      case 'auth/email-already-in-use': return "Email already registered. Try login.";
+      case 'auth/invalid-email': return "Invalid email address.";
+      case 'auth/weak-password': return "Password too short (min 6 chars).";
+      case 'auth/too-many-requests': return "Too many attempts. Wait a moment.";
+      case 'auth/popup-closed-by-user': return "Sign in cancelled.";
+      case 'custom/mismatch': return "Passwords do not match.";
+      default: return "Something went wrong. Try again.";
     }
   };
 
   const handleResendEmail = async () => {
-      // Note: User signout ho chuka hai, isliye currentUser null ho sakta hai.
-      // Is case me user ko login karke hi resend karna padega.
-      // Lekin UX simplify karne ke liye hum user se kehte hain login karein.
-      toast.error("Please login again to resend verification.");
-      setVerificationSent(false);
-      setAuthMode("login");
+    if (resendCooldown > 0) return;
+    try {
+        if (auth.currentUser) {
+            await sendEmailVerification(auth.currentUser);
+            toast.success("Verification email resent!");
+            setResendCooldown(60);
+            timerRef.current = setInterval(() => {
+                setResendCooldown((prev) => {
+                    if (prev <= 1) {
+                        clearInterval(timerRef.current);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+    } catch (err) {
+        toast.error("Wait before resending again.");
+    }
+  };
+
+  const handleManualCheck = async () => {
+      setLoading(true);
+      try {
+          const currentUser = auth.currentUser;
+          if (!currentUser) {
+              toast.error("Session expired. Please sign up again.");
+              setLoading(false);
+              return;
+          }
+          
+          await reload(currentUser);
+          if (currentUser.emailVerified) {
+              await syncUserToFirestore(currentUser);
+              toast.success("Verified! Redirecting...");
+              navigate("/", { replace: true });
+          } else {
+              toast.error("Still not verified. Check your spam folder.");
+          }
+      } catch (e) {
+          console.error("Manual verification check error:", e);
+          toast.error("Error checking verification status. Try again.");
+      } finally {
+          setLoading(false);
+      }
+  };
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setValidationErrors({});
+    setLoading(true);
+
+    try {
+      if (viewState === "forgot") {
+          if (!email) {
+            setValidationErrors({ email: "Email is required" });
+            setLoading(false);
+            return;
+          }
+          if (!validateEmail(email)) {
+            setValidationErrors({ email: "Invalid email format" });
+            setLoading(false);
+            return;
+          }
+          
+          await sendPasswordResetEmail(auth, email);
+          toast.success("Password reset link sent to your email!");
+          setViewState("reset-sent"); 
+          return;
+      }
+
+      if (viewState === "signup") {
+          // Client-side validation first
+          if (!validateSignup()) {
+              setLoading(false);
+              return;
+          }
+
+          // 1. Firebase Auth User create (Technical necessity for sending email)
+          const res = await createUserWithEmailAndPassword(auth, email, password);
+          const newUser = res.user;
+
+          // 2. Set display name
+          await updateProfile(newUser, { displayName: name });
+
+          // 3. Send verification email
+          await sendEmailVerification(newUser);
+          
+          // Reset form and switch to verify view
+          toast.success("Verification link sent to your email!");
+          setEmail("");
+          setPassword("");
+          setConfirmPass("");
+          setViewState("verify");
+          setPollAttempts(0);
+          return;
+      }
+
+      if (viewState === "login") {
+          if (!email || !password) {
+            const errors = {};
+            if (!email) errors.email = "Email is required";
+            if (!password) errors.password = "Password is required";
+            setValidationErrors(errors);
+            setLoading(false);
+            return;
+          }
+          
+          const res = await signInWithEmailAndPassword(auth, email, password);
+          
+          // Check if email is verified
+          if (!res.user.emailVerified) {
+              setViewState("verify");
+              setPollAttempts(0);
+              toast.success("Please verify your email to continue.");
+              return;
+          }
+          
+          // Sync verified user to DB
+          await syncUserToFirestore(res.user);
+          toast.success("Welcome back!");
+      }
+
+    } catch (err) {
+        console.error("Auth error:", err);
+        toast.error(getFriendlyErrorMessage(err.code));
+    } finally {
+        setLoading(false);
+    }
   };
 
   const handleGoogleLogin = async () => {
+    setLoading(true);
+    setValidationErrors({});
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const usr = result.user;
       
-      const docRef = doc(db, "users", usr.uid);
-      const docSnap = await getDoc(docRef);
-
-      if (!docSnap.exists()) {
-        await setDoc(docRef, {
-          displayName: usr.displayName,
-          email: usr.email,
-          photoURL: usr.photoURL,
-          createdAt: new Date()
-        });
-        toast.success("Account created with Google!");
-      } else {
-        toast.success("Welcome back!");
-      }
+      // Google user is trusted, sync immediately
+      await syncUserToFirestore(usr, {
+          createdAt: serverTimestamp()
+      });
       
-      // FIXED: Await tracking here too
-      await trackUserLogin(usr.uid, usr.email);
-      navigate("/", { replace: true });
-
+      toast.success("Welcome! Redirecting...");
+      // Navigation will happen automatically via useEffect
     } catch (err) {
-      console.error(err);
-      toast.error("Google Login Failed");
+      console.error("Google login error:", err);
+      if (err.code !== 'auth/popup-closed-by-user') {
+        toast.error(getFriendlyErrorMessage(err.code));
+      }
+      setLoading(false);
     }
   };
 
-  return (
-    <div className="h-[100dvh] w-full overflow-hidden bg-gradient-to-br from-gray-50 to-white flex flex-col font-sans">
+  const switchView = (view) => {
+      // Clear all intervals before switching view
+      clearAllIntervals();
+      
+      setViewState(view);
+      setEmail("");
+      setPassword("");
+      setName("");
+      setConfirmPass("");
+      setValidationErrors({});
+      setLoading(false);
+      setPollAttempts(0);
+  };
 
-      <header className="flex items-center justify-between px-6 md:px-16 h-20 border-b border-gray-200 bg-white">
+  if (authLoading) {
+    return (
+        <div className="min-h-screen w-full flex items-center justify-center bg-gray-50">
+            <FaSpinner className="animate-spin text-3xl text-indigo-600" />
+        </div>
+    );
+  }
+
+  return (
+    <div className="h-[100dvh] overflow-hidden w-full bg-gradient-to-br from-gray-50 to-white flex flex-col font-sans">
+      
+      <header className="flex-none flex items-center justify-between px-6 md:px-16 h-20 border-b border-gray-200 bg-white sticky top-0 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-lg shadow-slate-900/20">
             <FaFeatherAlt className="text-lg" />
           </div>
           <span className="text-2xl font-bold text-slate-800 tracking-tight">Likho</span>
         </div>
-        <span className="hidden md:block text-sm font-semibold text-slate-500">Made with ❤️ by Gaurav</span>
+        <span className="hidden md:block text-sm font-semibold text-slate-500">Made with ❤️ by Likho Team</span>
       </header>
 
-      <main className="flex-grow flex items-center justify-center px-4 md:px-6 py-10 lg:py-0 ">
+      <main className="flex-grow flex items-center justify-center px-4 py-2">
         <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-2 gap-10 items-center">
 
-          {/* Left Side (Features) */}
           <div className="hidden lg:flex flex-col justify-center space-y-6 pr-6">
             <h1 className="text-4xl lg:text-5xl font-extrabold text-slate-900 leading-tight">
               Share Your <span className="text-slate-800">Valuable</span> Thoughts
             </h1>
             <p className="text-lg text-slate-600">
-              Join Likho 2.0. A safe space to share your daily stories, public ideas, and private diary entries.
+              Join Likho A safe space to share your daily stories, public ideas, and private diary entries.
             </p>
             <div className="space-y-4 mt-4">
                 <FeatureItem icon={<FaPenFancy className="text-indigo-600" />} title="Write Freely" desc="Express anything without limits" />
@@ -245,92 +369,159 @@ export default function AuthPage() {
             </div>
           </div>
 
-          {/* Right Side (Form) */}
-          <div className="w-full max-w-md mx-auto bg-white border border-gray-200 p-8 rounded-3xl shadow-xl">
+          <div className="w-full max-w-md mx-auto bg-white border border-gray-200 px-8 py-6 rounded-3xl shadow-xl transition-all duration-300">
             
-            {/* --- VERIFICATION SCREEN --- */}
-            {verificationSent ? (
-                  <div className="text-center animate-fade-in">
-                     <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                         <FaPaperPlane size={24} />
-                     </div>
-                     <h2 className="text-2xl font-bold text-slate-900 mb-2">Verify your Email</h2>
-                     <p className="text-slate-500 text-sm mb-4">
-                         We sent a verification link to <br/>
-                         <span className="font-bold text-slate-800">{email}</span>
-                     </p>
-                     <div className="bg-amber-50 border border-amber-100 p-3 rounded-xl mb-6 flex items-start gap-3 text-left">
-                         <FaExclamationTriangle className="text-amber-500 shrink-0 mt-0.5" />
-                         <p className="text-xs text-amber-800 font-medium">Check <b>Spam/Junk</b> folder if not found. Then login again.</p>
-                     </div>
-                     <div className="space-y-3">
-                          <button onClick={() => { setVerificationSent(false); setAuthMode("login"); }} className="w-full py-3 bg-slate-900 text-white rounded-2xl font-bold hover:bg-black transition-all">Go to Login</button>
-                     </div>
-                     <button onClick={() => { setVerificationSent(false); setAuthMode("login"); }} className="mt-6 text-sm text-slate-400 font-bold hover:text-slate-600 flex items-center justify-center gap-2 mx-auto">
-                         <FaArrowLeft /> Back
-                     </button>
-                  </div>
-            ) : (
-                /* --- AUTH FORMS --- */
-                <>
-                    <h2 className="text-3xl font-bold text-center text-slate-900">
-                    {authMode === "login" ? "Welcome Back" : authMode === "signup" ? "Create Account" : "Reset Password"}
-                    </h2>
-                    <p className="text-center text-slate-500 mt-1 mb-6">
-                    {authMode === "login" ? "Login to continue" : authMode === "signup" ? "Sign up and start writing" : "Enter email to get reset link"}
+            {viewState === "verify" && (
+                <div className="text-center animate-fade-in">
+                    <div className="w-16 h-16 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <FaEnvelope size={24} />
+                    </div>
+                    <h2 className="text-2xl font-bold text-slate-900 mb-2">Verify your Email</h2>
+                    <p className="text-slate-500 text-sm mb-6">
+                        We are auto-checking...<br/>
+                        Link sent to: <span className="font-bold text-slate-800">{auth.currentUser?.email || email}</span>
                     </p>
 
-                    <form onSubmit={handleAuth} className="space-y-4">
-                        {/* Name - Signup Only */}
-                        {authMode === "signup" && (
+                    <button 
+                        onClick={handleManualCheck}
+                        disabled={loading}
+                        className="w-full py-3 bg-slate-900 text-white rounded-2xl font-bold mb-3 hover:bg-black transition-all flex justify-center items-center gap-2"
+                    >
+                        {loading && <FaSpinner className="animate-spin" />}
+                        {loading ? "Checking..." : "I have Verified"}
+                    </button>
+
+                    <button 
+                        onClick={handleResendEmail}
+                        disabled={resendCooldown > 0}
+                        className="w-full py-3 bg-white border-2 border-slate-100 text-slate-600 rounded-2xl font-bold hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                    >
+                        {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : <>Resend Email <FaRedo className="text-xs" /></>}
+                    </button>
+
+                    <button 
+                        onClick={() => { signOut(auth); switchView("login"); }} 
+                        className="mt-6 text-sm text-slate-400 font-bold hover:text-slate-600 flex items-center justify-center gap-2 mx-auto"
+                    >
+                        Sign Out & Back
+                    </button>
+                </div>
+            )}
+
+            {viewState === "reset-sent" && (
+                <div className="text-center animate-fade-in">
+                      <div className="w-16 h-16 bg-green-50 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <FaPaperPlane size={24} />
+                    </div>
+                    <h2 className="text-2xl font-bold text-slate-900 mb-2">Check your Inbox</h2>
+                    <p className="text-slate-500 text-sm mb-6">
+                        We sent a password reset link to<br/>
+                        <span className="font-bold text-slate-800">{email}</span>
+                    </p>
+                    <button onClick={() => switchView("login")} className="w-full py-3 bg-slate-900 text-white rounded-2xl font-bold hover:bg-black transition-all">
+                        Back to Login
+                    </button>
+                </div>
+            )}
+
+            {["login", "signup", "forgot"].includes(viewState) && (
+                <>
+                    <h2 className="text-3xl font-bold text-center text-slate-900">
+                    {viewState === "login" ? "Welcome Back" : viewState === "signup" ? "Create Account" : "Reset Password"}
+                    </h2>
+                    <p className="text-center text-slate-500 mt-1 mb-6">
+                    {viewState === "login" ? "Login to continue" : viewState === "signup" ? "Sign up and start writing" : "Enter email to get reset link"}
+                    </p>
+
+                    <form onSubmit={handleAuth} className="space-y-2">
+                        {viewState === "signup" && (
                             <div className="relative group">
                             <FaUser className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" />
                             <input
-                                type="text" placeholder="Full Name" required={authMode === "signup"}
-                                value={name} onChange={(e) => setName(e.target.value)}
-                                className="w-full pl-11 pr-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-2xl text-slate-800 font-semibold outline-none focus:border-slate-900 focus:bg-white transition-all"
+                                type="text" 
+                                name="name"
+                                placeholder="Full Name" 
+                                autoComplete="name"
+                                value={name} 
+                                onChange={(e) => {
+                                  setName(e.target.value);
+                                  if (validationErrors.name) setValidationErrors(prev => ({ ...prev, name: undefined }));
+                                }}
+                                className={`w-full pl-11 pr-4 py-3 bg-gray-50 border-2 rounded-2xl text-slate-800 font-semibold outline-none focus:bg-white transition-all ${
+                                  validationErrors.name ? 'border-red-400 focus:border-red-600' : 'border-gray-200 focus:border-slate-900'
+                                }`}
                             />
+                            {validationErrors.name && <p className="text-red-500 text-xs mt-1">{validationErrors.name}</p>}
                             </div>
                         )}
 
-                        {/* Email - All Modes */}
                         <div className="relative group">
                             <FaEnvelope className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" />
                             <input
-                                type="email" placeholder="Email Address" required
-                                value={email} onChange={(e) => setEmail(e.target.value)}
-                                className="w-full pl-11 pr-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-2xl text-slate-800 font-semibold outline-none focus:border-slate-900 focus:bg-white transition-all"
+                                type="email" 
+                                name="email"
+                                placeholder="Email Address" 
+                                autoComplete="email"
+                                aria-label="Email Address"
+                                value={email} 
+                                onChange={(e) => {
+                                  setEmail(e.target.value);
+                                  if (validationErrors.email) setValidationErrors(prev => ({ ...prev, email: undefined }));
+                                }}
+                                className={`w-full pl-11 pr-4 py-3 bg-gray-50 border-2 rounded-2xl text-slate-800 font-semibold outline-none focus:bg-white transition-all ${
+                                  validationErrors.email ? 'border-red-400 focus:border-red-600' : 'border-gray-200 focus:border-slate-900'
+                                }`}
                             />
+                            {validationErrors.email && <p className="text-red-500 text-xs mt-1">{validationErrors.email}</p>}
                         </div>
 
-                        {/* Password - Login & Signup Only */}
-                        {authMode !== "forgot" && (
+                        {viewState !== "forgot" && (
                             <div className="relative group">
                                 <FaLock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" />
                                 <input
-                                    type="password" placeholder="Password" required
-                                    value={password} onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-2xl text-slate-800 font-semibold outline-none focus:border-slate-900 focus:bg-white transition-all"
+                                    type="password" 
+                                    name="password"
+                                    placeholder="Password" 
+                                    autoComplete="current-password"
+                                    aria-label="Password"
+                                    value={password} 
+                                    onChange={(e) => {
+                                      setPassword(e.target.value);
+                                      if (validationErrors.password) setValidationErrors(prev => ({ ...prev, password: undefined }));
+                                    }}
+                                    className={`w-full pl-11 pr-4 py-3 bg-gray-50 border-2 rounded-2xl text-slate-800 font-semibold outline-none focus:bg-white transition-all ${
+                                      validationErrors.password ? 'border-red-400 focus:border-red-600' : 'border-gray-200 focus:border-slate-900'
+                                    }`}
                                 />
+                                {validationErrors.password && <p className="text-red-500 text-xs mt-1">{validationErrors.password}</p>}
                             </div>
                         )}
 
-                        {/* Confirm Password - Signup Only */}
-                        {authMode === "signup" && (
+                        {viewState === "signup" && (
                             <div className="relative group">
                                 <FaCheck className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" />
                                 <input
-                                    type="password" placeholder="Confirm Password" required
-                                    value={confirmPass} onChange={(e) => setConfirmPass(e.target.value)}
-                                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-2xl text-slate-800 font-semibold outline-none focus:border-slate-900 focus:bg-white transition-all"
+                                    type="password" 
+                                    name="confirmPassword"
+                                    placeholder="Confirm Password" 
+                                    autoComplete="new-password"
+                                    aria-label="Confirm Password"
+                                    value={confirmPass} 
+                                    onChange={(e) => {
+                                      setConfirmPass(e.target.value);
+                                      if (validationErrors.confirmPass) setValidationErrors(prev => ({ ...prev, confirmPass: undefined }));
+                                    }}
+                                    className={`w-full pl-11 pr-4 py-3 bg-gray-50 border-2 rounded-2xl text-slate-800 font-semibold outline-none focus:bg-white transition-all ${
+                                      validationErrors.confirmPass ? 'border-red-400 focus:border-red-600' : 'border-gray-200 focus:border-slate-900'
+                                    }`}
                                 />
+                                {validationErrors.confirmPass && <p className="text-red-500 text-xs mt-1">{validationErrors.confirmPass}</p>}
                             </div>
                         )}
 
-                        {/* Forgot Password Link - Login Only */}
-                        {authMode === "login" && (
+                        {viewState === "login" && (
                             <div className="flex justify-end">
-                                <button type="button" onClick={() => setAuthMode("forgot")} className="text-sm font-bold text-indigo-600 hover:text-indigo-800">
+                                <button type="button" onClick={() => switchView("forgot")} className="text-sm font-bold text-indigo-600 hover:text-indigo-800">
                                     Forgot Password?
                                 </button>
                             </div>
@@ -339,13 +530,14 @@ export default function AuthPage() {
                         <button
                             type="submit"
                             disabled={loading}
-                            className="w-full py-3 bg-slate-900 text-white rounded-2xl text-lg font-bold shadow-lg shadow-slate-900/20 hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-70 disabled:cursor-not-allowed"
+                            className="w-full py-3 bg-slate-900 text-white rounded-2xl text-lg font-bold shadow-lg shadow-slate-900/20 hover:scale-[1.01] active:scale-95 transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
-                            {loading ? "Processing..." : authMode === "login" ? "Log In" : authMode === "signup" ? "Create Account" : "Send Reset Link"}
+                            {loading && <FaSpinner className="animate-spin text-sm" />}
+                            {loading ? "Processing..." : viewState === "login" ? "Log In" : viewState === "signup" ? "Create Account" : "Send Reset Link"}
                         </button>
                     </form>
 
-                    {authMode !== "forgot" && (
+                    {viewState !== "forgot" && (
                         <>
                             <div className="my-6 flex items-center">
                                 <div className="h-px bg-gray-200 flex-1" />
@@ -354,26 +546,27 @@ export default function AuthPage() {
                             </div>
 
                             <button
-                            onClick={handleGoogleLogin}
-                            className="w-full py-3 bg-white border-2 border-gray-200 rounded-2xl font-bold text-slate-700 hover:bg-gray-50 transition-all flex items-center justify-center gap-2"
+                                onClick={handleGoogleLogin}
+                                disabled={loading}
+                                className="w-full py-3 bg-white border-2 border-gray-200 rounded-2xl font-bold text-slate-700 hover:bg-gray-50 transition-all flex items-center justify-center gap-2"
                             >
-                            <FcGoogle size={22} />
-                            Google
+                                <FcGoogle size={22} />
+                                Google
                             </button>
                         </>
                     )}
 
                     <div className="text-center text-sm mt-6 text-slate-600">
-                        {authMode === "login" ? (
+                        {viewState === "login" ? (
                             <>
-                                New here? <button onClick={() => setAuthMode("signup")} className="text-slate-900 font-bold hover:underline">Create Account</button>
+                                New here? <button onClick={() => switchView("signup")} className="text-slate-900 font-bold hover:underline">Create Account</button>
                             </>
-                        ) : authMode === "signup" ? (
+                        ) : viewState === "signup" ? (
                             <>
-                                Already a member? <button onClick={() => setAuthMode("login")} className="text-slate-900 font-bold hover:underline">Log In</button>
+                                Already a member? <button onClick={() => switchView("login")} className="text-slate-900 font-bold hover:underline">Log In</button>
                             </>
                         ) : (
-                            <button onClick={() => setAuthMode("login")} className="text-slate-900 font-bold hover:underline flex items-center justify-center gap-2 w-full">
+                            <button onClick={() => switchView("login")} className="text-slate-900 font-bold hover:underline flex items-center justify-center gap-2 w-full">
                                 <FaArrowLeft /> Back to Login
                             </button>
                         )}

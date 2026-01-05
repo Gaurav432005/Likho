@@ -3,13 +3,32 @@ import { Link, useNavigate } from "react-router-dom";
 import { db } from "../../lib/firebase";
 import { 
   collection, query, where, onSnapshot, orderBy, 
-  getDocs, limit, addDoc, serverTimestamp, startAt, endAt 
+  getDocs, addDoc, serverTimestamp, getDoc, doc
 } from "firebase/firestore";
 import { useAuth } from "../../context/AuthContext";
 import { Avatar } from "../../components/ui/Avatar";
 import { Loading } from "../../components/ui/Loading";
-import { FaSearch, FaUserPlus, FaArrowRight, FaArrowDown } from "react-icons/fa";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { FormInput } from "../../components/ui/FormInput";
+import { FaSearch, FaUserPlus, FaPaperPlane } from "react-icons/fa";
 import { toast } from "react-hot-toast";
+import { motion } from "framer-motion";
+
+function formatTime(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp.seconds * 1000);
+  const now = new Date();
+  const diff = now - date;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  if (hours < 24) return `${hours}h`;
+  if (days < 7) return `${days}d`;
+  return date.toLocaleDateString();
+}
 
 export default function ChatList() {
   const { user } = useAuth();
@@ -18,239 +37,240 @@ export default function ChatList() {
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [globalResults, setGlobalResults] = useState([]);
-  
-  // Pagination State
-  const [chatLimit, setChatLimit] = useState(15);
-  const [hasMoreChats, setHasMoreChats] = useState(true);
+  const [showUserSearch, setShowUserSearch] = useState(false);
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchingUsers, setSearchingUsers] = useState(false);
 
-  // Helper: Capitalize for better search (Firestore workaround)
-  const capitalize = (str) => str.charAt(0).toUpperCase() + str.slice(1);
-
-  // 1. Fetch Chats (Real-time)
+  // Real-time chat listener
   useEffect(() => {
-    if (!user) return;
+    if (!user?.uid) {
+      setLoading(false);
+      return;
+    }
 
-    // ERROR NOTE: Agar console me "The query requires an index" aaye, 
-    // to link par click karke Index bana lena.
     const q = query(
       collection(db, "chats"), 
       where("users", "array-contains", user.uid),
-      orderBy("lastMessageTime", "desc"),
-      limit(chatLimit)
+      orderBy("lastMessageTime", "desc")
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const chatData = snapshot.docs.map(doc => {
         const data = doc.data();
-        
-        // Safety Checks
         if (!data.users || !Array.isArray(data.users)) return null;
 
         const otherUid = data.users.find(u => u !== user.uid);
-        
-        // Fallback agar details missing ho
         const otherUser = data.participantDetails?.[otherUid] || { 
-            name: "Unknown User", 
-            photoURL: null 
+          displayName: "Unknown", 
+          photoURL: null 
         };
 
         const isUnread = data.lastMessageSenderId && 
                          data.lastMessageSenderId !== user.uid && 
-                         data.receiverHasRead === false;
+                         !data.readBy?.includes(user.uid);
 
-        return { id: doc.id, ...data, otherUser, otherUid, isUnread };
+        return { 
+          id: doc.id, 
+          ...data, 
+          otherUser, 
+          otherUid, 
+          isUnread,
+          timeString: formatTime(data.lastMessageTime)
+        };
       }).filter(Boolean);
+
+      chatData.sort((a, b) => {
+        const timeA = a.lastMessageTime?.seconds || 0;
+        const timeB = b.lastMessageTime?.seconds || 0;
+        return timeB - timeA;
+      });
 
       setChats(chatData);
       setLoading(false);
-      
-      // Pagination Logic check
-      if(snapshot.docs.length < chatLimit) setHasMoreChats(false);
-      else setHasMoreChats(true);
+    }, (error) => {
+      console.error("Chat listener error:", error);
+      setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [user, chatLimit]);
+  }, [user?.uid]);
 
-  // 2. Global Search (Optimized)
-  useEffect(() => {
-      if (!searchTerm.trim()) { setGlobalResults([]); return; }
+  // Search for users
+  const handleUserSearch = async (term) => {
+    if (!term.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    setSearchingUsers(true);
+    try {
+      const q = query(
+        collection(db, "users"),
+        where("displayName", ">=", term),
+        where("displayName", "<=", term + "\uf8ff"),
+        orderBy("displayName")
+      );
       
-      const timer = setTimeout(async () => {
-          try {
-            // FIX: Search term ko capitalize kar rahe hain taaki "rahul" likhne par "Rahul" mile
-            const formattedSearch = capitalize(searchTerm.trim());
+      let snapshot = await getDocs(q);
+      let results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-            const q = query(
-                collection(db, "users"),
-                orderBy("displayName"),
-                startAt(formattedSearch),
-                endAt(formattedSearch + "\uf8ff"),
-                limit(10)
-            );
-
-            const snap = await getDocs(q);
-            
-            // Check if we are already chatting with these users
-            const existingIds = new Set(chats.map(c => c.otherUid));
-            
-            const results = snap.docs
-                .map(d => ({ uid: d.id, ...d.data() }))
-                .filter(u => u.uid !== user.uid && !existingIds.has(u.uid));
-
-            setGlobalResults(results);
-          } catch (err) {
-            console.error("Search Error (Index missing mostly):", err);
-          }
-      }, 500); // 500ms Debounce
-      return () => clearTimeout(timer);
-  }, [searchTerm, user, chats]);
-
-  // 3. Handle Start Chat
-  const handleStartNewChat = async (targetUser) => {
-      if(!targetUser.uid) return;
-      const toastId = toast.loading("Starting chat...");
-
-      // Check 1: Client side (Fastest)
-      const existingChat = chats.find(c => c.otherUid === targetUser.uid);
-      if (existingChat) {
-          toast.dismiss(toastId);
-          navigate(`/chat/${existingChat.id}`);
-          setSearchTerm("");
-          return;
-      }
-
-      try {
-          // Check 2: Server side (Safe)
-          const q = query(
-            collection(db, "chats"), 
-            where("users", "array-contains", user.uid)
-          );
-          const snap = await getDocs(q);
-          const dbExistingChat = snap.docs.find(doc => {
-              const data = doc.data();
-              return data.users.includes(targetUser.uid);
-          });
-
-          if (dbExistingChat) {
-              toast.dismiss(toastId);
-              navigate(`/chat/${dbExistingChat.id}`);
-              setSearchTerm("");
-              return;
-          }
-
-          // Create NEW Chat
-          const newChat = await addDoc(collection(db, "chats"), {
-              users: [user.uid, targetUser.uid],
-              participantDetails: { 
-                  [user.uid]: { name: user.displayName || "User", photoURL: user.photoURL || null }, 
-                  [targetUser.uid]: { name: targetUser.displayName || "User", photoURL: targetUser.photoURL || null } 
-              },
-              lastMessage: "👋 Started conversation", 
-              lastMessageSenderId: user.uid, 
-              lastMessageTime: serverTimestamp(), 
-              receiverHasRead: false
-          });
-          
-          toast.success("Chat created!", { id: toastId });
-          navigate(`/chat/${newChat.id}`);
-          setSearchTerm("");
-
-      } catch(e) { 
-          console.error(e);
-          toast.error("Error starting chat", { id: toastId }); 
-      }
+      const filtered = results.filter(u => u.id !== user?.uid);
+      setSearchResults(filtered);
+    } catch (error) {
+      console.error("Search error:", error);
+    } finally {
+      setSearchingUsers(false);
+    }
   };
 
-  // Filter loaded chats based on search
-  const filteredChats = chats.filter(c => 
-      c.otherUser?.name?.toLowerCase().includes(searchTerm.toLowerCase())
+  const handleStartChat = async (otherUser) => {
+    try {
+      const existingChat = chats.find(c => c.otherUid === otherUser.id);
+      if (existingChat) {
+        navigate(`/chat/${existingChat.id}`);
+        return;
+      }
+
+      const chatRef = await addDoc(collection(db, "chats"), {
+        users: [user.uid, otherUser.id].sort(),
+        participantDetails: {
+          [user.uid]: {
+            displayName: user.displayName,
+            photoURL: user.photoURL
+          },
+          [otherUser.id]: {
+            displayName: otherUser.displayName,
+            photoURL: otherUser.photoURL
+          }
+        },
+        lastMessage: "",
+        lastMessageSenderId: null,
+        lastMessageTime: serverTimestamp(),
+        readBy: []
+      });
+
+      setShowUserSearch(false);
+      setSearchTerm("");
+      navigate(`/chat/${chatRef.id}`);
+    } catch (error) {
+      console.error("Chat creation error:", error);
+      toast.error("Failed to start chat");
+    }
+  };
+
+  if (loading) return <Loading message="Loading chats..." />;
+
+  const filteredChats = chats.filter(c =>
+    c.otherUser?.displayName?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
-    <div className="pb-24">
-       <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 mb-6 sticky top-0 z-10">
-           <div className="flex justify-between items-center mb-4">
-                <h1 className="text-2xl font-bold text-slate-900">Messages</h1>
-                <span className="text-xs font-bold bg-slate-100 text-slate-600 px-2 py-1 rounded-full">{chats.length}</span>
-           </div>
-           
-           <div className="relative">
-               <FaSearch className="absolute left-4 top-3.5 text-slate-400" />
-               <input 
-                 value={searchTerm} 
-                 onChange={e => setSearchTerm(e.target.value)} 
-                 placeholder="Search friend or find new..." 
-                 className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-3 outline-none focus:border-indigo-500 transition-all placeholder:text-slate-400 text-slate-800 font-medium" 
-               />
-           </div>
-       </div>
+    <div className="w-full max-w-2xl mx-auto h-full flex flex-col">
+      {/* Header */}
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-900 mb-4">Messages</h2>
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <FormInput 
+              type="text"
+              placeholder="Search conversations..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              icon={FaSearch}
+            />
+          </div>
+          <button
+            onClick={() => setShowUserSearch(!showUserSearch)}
+            className="bg-primary-600 text-white px-4 py-2.5 rounded-lg font-semibold hover:bg-primary-700 transition-colors flex items-center gap-2 whitespace-nowrap"
+          >
+            <FaUserPlus /> New Chat
+          </button>
+        </div>
+      </div>
 
-       {loading ? <Loading message="Loading Chats..." /> : (
-           <div className="space-y-4 px-1">
-              
-              {/* Existing Chats */}
-              {filteredChats.map(chat => (
-                  <Link key={chat.id} to={`/chat/${chat.id}`} className={`block bg-white p-4 rounded-2xl border transition-all hover:shadow-md hover:scale-[1.01] active:scale-[0.99] ${chat.isUnread ? 'border-indigo-200 bg-indigo-50/30' : 'border-slate-100'}`}>
-                       <div className="flex items-center gap-4">
-                           <Avatar src={chat.otherUser.photoURL} name={chat.otherUser.name} size="md" />
-                           <div className="flex-1 min-w-0">
-                               <div className="flex justify-between mb-1">
-                                   <h3 className={`text-sm truncate ${chat.isUnread ? 'font-bold text-slate-900' : 'font-semibold text-slate-700'}`}>
-                                       {chat.otherUser.name}
-                                   </h3>
-                                   {/* Time logic can be added here if available in chat object */}
-                               </div>
-                               <div className="flex justify-between items-center">
-                                   <p className={`text-sm truncate max-w-[85%] ${chat.isUnread ? 'font-semibold text-slate-900' : 'text-slate-500'}`}>
-                                      {chat.lastMessageSenderId === user.uid ? <span className="text-slate-400">You: </span> : ""} 
-                                      {chat.lastMessage}
-                                   </p>
-                                   {chat.isUnread && <span className="w-2.5 h-2.5 bg-indigo-600 rounded-full animate-pulse shadow-sm shadow-indigo-300"></span>}
-                               </div>
-                           </div>
-                       </div>
-                  </Link>
-              ))}
-
-              {/* Global Search Results */}
-              {searchTerm.trim() && globalResults.length > 0 && (
-                  <div className="mt-8 animate-fade-in">
-                      <h3 className="text-xs font-bold text-slate-400 uppercase mb-3 ml-2 tracking-wider">New People</h3>
-                      {globalResults.map(gUser => (
-                          <div key={gUser.uid} onClick={() => handleStartNewChat(gUser)} className="flex items-center justify-between p-4 bg-white rounded-2xl border border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors mb-3 shadow-sm hover:shadow-md">
-                              <div className="flex items-center gap-4">
-                                  <Avatar src={gUser.photoURL} name={gUser.displayName} size="md" />
-                                  <div>
-                                      <h4 className="font-bold text-sm text-slate-900">{gUser.displayName}</h4>
-                                      <p className="text-xs text-slate-400">Tap to message</p>
-                                  </div>
-                              </div>
-                              <div className="w-9 h-9 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center hover:bg-indigo-100 transition-colors">
-                                  <FaUserPlus size={14} />
-                              </div>
-                          </div>
-                      ))}
+      {/* User Search */}
+      {showUserSearch && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200"
+        >
+          <FormInput 
+            type="text"
+            placeholder="Search by name or email..."
+            onChange={(e) => handleUserSearch(e.target.value)}
+            autoFocus
+            icon={FaSearch}
+          />
+          
+          {searchingUsers && <div className="mt-4 text-center text-slate-500">Searching...</div>}
+          
+          {searchResults.length > 0 && (
+            <div className="mt-4 space-y-2">
+              {searchResults.slice(0, 5).map(u => (
+                <div 
+                  key={u.id}
+                  className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-200 hover:border-primary-300 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <Avatar src={u.photoURL} name={u.displayName} size="sm" />
+                    <div>
+                      <p className="font-semibold text-slate-900">{u.displayName}</p>
+                      <p className="text-xs text-slate-500">{u.email}</p>
+                    </div>
                   </div>
-              )}
-              
-              {/* No Results State */}
-              {searchTerm.trim() && filteredChats.length === 0 && globalResults.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-12 text-slate-400 opacity-60">
-                      <FaSearch size={24} className="mb-2" />
-                      <p>No users found named "{searchTerm}"</p>
-                  </div>
-              )}
-
-              {/* Load More Button */}
-              {!searchTerm && hasMoreChats && (
-                  <button onClick={() => setChatLimit(prev => prev + 15)} className="w-full py-4 text-slate-500 text-sm font-bold hover:text-indigo-600 hover:bg-slate-50 rounded-xl flex items-center justify-center gap-2 mt-4 transition-all">
-                      <FaArrowDown /> Load More Chats
+                  <button
+                    onClick={() => handleStartChat(u)}
+                    className="bg-primary-600 text-white p-2 rounded-lg hover:bg-primary-700 transition-colors"
+                  >
+                    <FaPaperPlane />
                   </button>
-              )}
-           </div>
-       )}
+                </div>
+              ))}
+            </div>
+          )}
+        </motion.div>
+      )}
+
+      {/* Chat List */}
+      {filteredChats.length === 0 ? (
+        <EmptyState 
+          icon={FaPaperPlane}
+          title="No conversations yet"
+          description="Start a new chat with someone!"
+          actionLabel="Find Users"
+          onAction={() => setShowUserSearch(true)}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto space-y-2">
+          {filteredChats.map(chat => (
+            <Link 
+              key={chat.id}
+              to={`/chat/${chat.id}`}
+              className="flex items-center gap-4 p-4 bg-white rounded-xl border border-slate-200 hover:border-primary-300 hover:shadow-md transition-all"
+            >
+              <div className="relative">
+                <Avatar src={chat.otherUser?.photoURL} name={chat.otherUser?.displayName} size="md" />
+                {chat.isUnread && <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-primary-600 rounded-full border-2 border-white"></div>}
+              </div>
+              
+              <div className="flex-1 min-w-0">
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 className={`font-semibold truncate ${chat.isUnread ? 'text-slate-900' : 'text-slate-700'}`}>
+                    {chat.otherUser?.displayName}
+                  </h3>
+                  <span className={`text-xs whitespace-nowrap ${chat.isUnread ? 'text-primary-600 font-semibold' : 'text-slate-400'}`}>
+                    {chat.timeString}
+                  </span>
+                </div>
+                <p className={`text-sm truncate ${chat.isUnread ? 'text-slate-700 font-medium' : 'text-slate-500'}`}>
+                  {chat.lastMessage || "No messages yet"}
+                </p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
