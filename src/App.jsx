@@ -25,7 +25,7 @@ export default function App() {
           This application has been deleted.
         </h1>
         <p style={{ opacity: 0.65, fontSize: "1rem" }}>
-          The service is no longer available.
+          Sorry...
         </p>
       </div>
     </div>
